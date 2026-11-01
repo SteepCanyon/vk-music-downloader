@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -18,30 +18,22 @@ jobs:
       run: |
         brew install vlc ffmpeg
         pip install pyinstaller requests mutagen vkpymusic python-vlc
-        
-        # Готовим локальные папки для PyInstaller
         mkdir -p vlc_bundle/lib vlc_bundle/plugins ffmpeg
         cp -R /Applications/VLC.app/Contents/MacOS/lib/* vlc_bundle/lib/
         cp -R /Applications/VLC.app/Contents/MacOS/plugins/* vlc_bundle/plugins/
         cp $(brew --prefix ffmpeg)/bin/ffmpeg ffmpeg/
-        
     - name: Build .app
       run: |
-        pyinstaller --windowed --noconfirm --name "VKMusicDownloader" \
-          --icon AppIcon.icns --osx-bundle-identifier "com.suncho.vkmusic" \
-          --collect-all vkpymusic --add-data "vlc_bundle:vlc_bundle" \
-          --add-data "ffmpeg:ffmpeg" vk_music_mac.py
+        pyinstaller --windowed --noconfirm --name "VKMusicDownloader" --icon AppIcon.icns --osx-bundle-identifier "com.suncho.vkmusic" --collect-all vkpymusic --add-data "vlc_bundle:vlc_bundle" --add-data "ffmpeg:ffmpeg" vk_music_mac.py
         codesign --force --deep --sign - "dist/VKMusicDownloader.app"
-        
     - name: Create DMG
-      run: |
-        hdiutil create -volname "VK Music Downloader" -srcfolder "dist/VKMusicDownloader.app" -ov -format UDZO "VKMusicDownloader.dmg"
-        
-    - name: Upload macOS Artifact
-      uses: actions/upload-artifact@v4
+      run: hdiutil create -volname "VK Music Downloader" -srcfolder "dist/VKMusicDownloader.app" -ov -format UDZO "VKMusicDownloader.dmg"
+    - name: Upload Release Asset
+      uses: softprops/action-gh-release@v2
       with:
-        name: VKMusicDownloader-macOS
-        path: VKMusicDownloader.dmg
+        files: VKMusicDownloader.dmg
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-windows:
     runs-on: windows-latest
@@ -55,19 +47,15 @@ jobs:
       run: |
         choco install ffmpeg vlc -y
         pip install pyinstaller requests mutagen vkpymusic python-vlc
-        
         mkdir vlc_bundle, ffmpeg
         xcopy "C:\Program Files\VideoLAN\VLC\*" "vlc_bundle\" /E /I /H /Y
         copy "C:\ProgramData\chocolatey\bin\ffmpeg.exe" "ffmpeg\ffmpeg.exe"
-        
     - name: Build .exe
       run: |
-        pyinstaller --windowed --onefile --noconfirm --name "VKMusicDownloader" `
-          --icon AppIcon.ico --collect-all vkpymusic `
-          --add-data "vlc_bundle;vlc_bundle" --add-data "ffmpeg;ffmpeg" vk_music_mac.py
-          
-    - name: Upload Windows Artifact
-      uses: actions/upload-artifact@v4
+        pyinstaller --windowed --onefile --noconfirm --name "VKMusicDownloader" --icon AppIcon.ico --collect-all vkpymusic --add-data "vlc_bundle;vlc_bundle" --add-data "ffmpeg;ffmpeg" vk_music_mac.py
+    - name: Upload Release Asset
+      uses: softprops/action-gh-release@v2
       with:
-        name: VKMusicDownloader-Windows
-        path: dist/VKMusicDownloader.exe
+        files: dist/VKMusicDownloader.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
