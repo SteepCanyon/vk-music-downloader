@@ -1,0 +1,4 @@
+requests
+mutagen
+vkpymusic
+python-vlc
