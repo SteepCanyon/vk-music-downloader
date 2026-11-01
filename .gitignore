@@ -1,0 +1,26 @@
+# Виртуальное окружение и кэш
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.spec
+
+# Собранные приложения и архивы
+dist/
+build/
+*.dmg
+*.app
+*.exe
+
+# Тяжелые зависимости (VLC и ffmpeg) - не заливаем в репозиторий
+vlc_bundle/
+ffmpeg/
+
+# Логи и бэкапы
+backups/
+logs/
+*.log
+
+# Системный мусор
+.DS_Store

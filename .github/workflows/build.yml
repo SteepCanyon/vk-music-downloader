@@ -1,0 +1,62 @@
+name: Build Releases
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        pip install pyinstaller ttkbootstrap requests mutagen vkpymusic python-vlc
+    - name: Build macOS app
+      run: |
+        pyinstaller --windowed --noconfirm --name "VKMusicDownloader" \
+          --icon AppIcon.icns --osx-bundle-identifier "com.suncho.vkmusic" \
+          --collect-all vkpymusic --add-data "vlc_bundle:vlc_bundle" \
+          --add-data "ffmpeg:ffmpeg" vk_music_mac.py
+    - name: Create DMG
+      run: |
+        hdiutil create -volname "VK Music Downloader" -srcfolder "dist/VKMusicDownloader.app" -ov -format UDZO "VKMusicDownloader.dmg"
+    - name: Upload macOS Artifact
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./VKMusicDownloader.dmg
+        asset_name: VKMusicDownloader-macOS.dmg
+        asset_content_type: application/x-apple-diskimage
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        pip install pyinstaller ttkbootstrap requests mutagen vkpymusic python-vlc
+    - name: Build Windows EXE
+      run: |
+        pyinstaller --windowed --onefile --noconfirm --name "VKMusicDownloader" \
+          --icon AppIcon.ico --collect-all vkpymusic \
+          --add-data "vlc_bundle;vlc_bundle" --add-data "ffmpeg;ffmpeg" vk_music_mac.py
+    - name: Upload Windows Artifact
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./dist/VKMusicDownloader.exe
+        asset_name: VKMusicDownloader-Windows.exe
+        asset_content_type: application/vnd.microsoft.portable-executable

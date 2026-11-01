@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VK Music Downloader — macOS версия (4 вкладки: Настройки, Вход, Загрузчик, Плеер).
+VK Music Downloader — macOS версия (Стабильная сборка без ttkbootstrap).
 """
 
 import os
@@ -16,72 +16,63 @@ import logging
 import webbrowser
 from datetime import datetime
 import tkinter as tk
-import ttkbootstrap as ttk
-from tkinter import messagebox, filedialog, scrolledtext
+from tkinter import ttk, messagebox, filedialog, scrolledtext
 
 # ============================================================================
-# ПОДГОТОВКА ПУТЕЙ К БИБЛИОТЕКАМ (VLC и FFmpeg)
+# ПУТИ И ЛОГИ
 # ============================================================================
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-LOCAL_VLC_DIR = os.path.join(APP_DIR, "vlc_bundle")
-LOCAL_FFMPEG = os.path.join(APP_DIR, "ffmpeg", "ffmpeg")
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+    RESOURCE_DIR = getattr(sys, '_MEIPASS', APP_DIR)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    RESOURCE_DIR = APP_DIR
 
-# Настраиваем VLC до его импорта
+LOCAL_VLC_DIR = os.path.join(RESOURCE_DIR, "vlc_bundle")
+LOCAL_FFMPEG = os.path.join(RESOURCE_DIR, "ffmpeg", "ffmpeg")
+
 if os.path.exists(os.path.join(LOCAL_VLC_DIR, "lib", "libvlc.dylib")):
     os.environ["DYLD_LIBRARY_PATH"] = os.path.join(LOCAL_VLC_DIR, "lib")
     os.environ["VLC_PLUGIN_PATH"] = os.path.join(LOCAL_VLC_DIR, "plugins")
-else:
-    for _vlc_candidate in ("/Applications/VLC.app/Contents/MacOS", "/Applications/MacPorts/VLC.app/Contents/MacOS"):
-        if os.path.exists(f"{_vlc_candidate}/lib/libvlc.dylib"):
-            os.environ["DYLD_LIBRARY_PATH"] = f"{_vlc_candidate}/lib"
-            os.environ.setdefault("VLC_PLUGIN_PATH", f"{_vlc_candidate}/plugins")
-            break
+
+LOG_DIR = os.path.join(os.path.expanduser("~"), "Library", "Logs", "VKMusicDownloader")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# МАГИЯ: Меняем рабочую директорию, чтобы vkpymusic мог создать свою папку 'logs'
+# без ошибки Read-only file system. Делаем это ДО импорта vkpymusic.
+os.chdir(LOG_DIR)
+LOG_FILE = os.path.join(LOG_DIR, f"vk_music_{datetime.now():%Y%m%d_%H%M%S}.txt")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+_log = logging.getLogger("vkd")
 
 import requests
-import vlc
-
 try:
     from vkpymusic import Service
 except ImportError:
-    print("Нужен vkpymusic: pip install vkpymusic")
+    print("Нужен vkpymusic")
     sys.exit(1)
-
 try:
     from mutagen.mp3 import MP3
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
 
-# ============================================================================
-# ЛОГИРОВАНИЕ
-# ============================================================================
 CONFIG = os.path.join(os.path.expanduser("~"), ".vk_music_downloader.json")
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Music", "VK")
-LOG_DIR = os.path.join(APP_DIR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, f"vk_music_{datetime.now():%Y%m%d_%H%M%S}.txt")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(filename)s(%(lineno)d) | %(funcName)s(...) | [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler(sys.stdout)]
-)
-_log = logging.getLogger("vkd")
-
-# ============================================================================
-# КОНСТАНТЫ
-# ============================================================================
 UA = "KateMobileAndroid/56.1 lite-487 (Android 10; SDK 29; arm64-v8a; samsung SM-G975F; ru; 1440x3040)"
-API_HEADERS = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"}
 API_BASE = "https://api.vk.com/method/"
 API_VERSION = "5.131"
-
 MIN_FILE_SIZE = 100_000
 MAX_DOWNLOAD_RETRIES = 3
 DELAY_BETWEEN_TRACKS = 0.4
-LIVE_UPDATE_INTERVAL = 3
-STALL_TIMEOUT = 60
-WATCHDOG_INTERVAL = 3
 
 def load_cfg():
     try:
@@ -103,57 +94,17 @@ def enable_clipboard(widget):
                 try:
                     if widget.tag_ranges("sel"): widget.delete("sel.first", "sel.last")
                 except Exception: pass
-                widget.insert(tk.INSERT, data); widget.see(tk.INSERT)
+                widget.insert(tk.INSERT, data)
+                widget.see(tk.INSERT)
             else:
                 try: widget.delete("sel.first", "sel.last")
                 except Exception: pass
                 widget.insert(tk.INSERT, data)
         except Exception: pass
         return "break"
-    def _copy(e=None):
-        try:
-            t = widget.selection_get()
-            widget.clipboard_clear(); widget.clipboard_append(t)
-        except Exception: pass
-        return "break"
-    def _cut(e=None):
-        try:
-            t = widget.selection_get()
-            widget.clipboard_clear(); widget.clipboard_append(t)
-            widget.delete("sel.first", "sel.last")
-        except Exception: pass
-        return "break"
-    def _sel_all(e=None):
-        try:
-            if is_text:
-                widget.tag_add("sel", "1.0", "end-1c"); widget.mark_set(tk.INSERT, "1.0"); widget.see(tk.INSERT)
-            else:
-                widget.select_range(0, "end"); widget.icursor("end")
-        except Exception: pass
-        return "break"
-    for seq in ("<Command-v>", "<Command-V>", "<Control-v>", "<Control-V>"):
+    for seq in ("<Command-v>", "<Control-v>"):
         try: widget.bind(seq, _paste)
         except Exception: pass
-    for seq in ("<Command-c>", "<Command-C>", "<Control-c>", "<Control-C>"):
-        try: widget.bind(seq, _copy)
-        except Exception: pass
-    for seq in ("<Command-x>", "<Command-X>", "<Control-x>", "<Control-X>"):
-        try: widget.bind(seq, _cut)
-        except Exception: pass
-    for seq in ("<Command-a>", "<Command-A>", "<Control-a>", "<Control-A>"):
-        try: widget.bind(seq, _sel_all)
-        except Exception: pass
-    menu = tk.Menu(widget, tearoff=0)
-    menu.add_command(label="Вырезать", command=_cut)
-    menu.add_command(label="Копировать", command=_copy)
-    menu.add_command(label="Вставить", command=_paste)
-    menu.add_separator()
-    menu.add_command(label="Выделить всё", command=_sel_all)
-    def _popup(e):
-        try: menu.tk_popup(e.x_root, e.y_root)
-        finally: menu.grab_release()
-        return "break"
-    widget.bind("<Button-2>", _popup); widget.bind("<Button-3>", _popup)
 
 def resolve_music_dir(base_dir):
     if not base_dir or not os.path.isdir(base_dir): return base_dir
@@ -229,7 +180,6 @@ def extract_ids(song):
 def fetch_audio_url(owner_id, audio_id, token, user_agent=UA):
     params = {"access_token": token, "v": API_VERSION, "lang": "ru", "audios": f"{owner_id}_{audio_id}"}
     headers = {"User-Agent": user_agent}
-    _log.info(f"Запрос аудио: {owner_id}_{audio_id}")
     r = requests.post(API_BASE + "audio.getById", data=params, headers=headers, timeout=30)
     r.raise_for_status(); j = r.json()
     if "error" in j: raise RuntimeError(f"VK API [{j['error'].get('error_code')}]: {j['error'].get('error_msg')}")
@@ -240,13 +190,6 @@ def fetch_audio_url(owner_id, audio_id, token, user_agent=UA):
     if not url: raise RuntimeError("В ответе нет URL")
     return url, track
 
-def parse_ffmpeg_bitrate(stderr_text):
-    m = re.search(r'Audio:\s+\w+[^,]*,.*?(\d+)\s+kb/s', stderr_text)
-    if m: return int(m.group(1))
-    m = re.search(r'(\d+)\s+kb/s', stderr_text)
-    if m: return int(m.group(1))
-    return None
-
 def download_hls_to_mp3(url, out_path, cancel_getter, on_progress=None, user_agent=UA):
     ffmpeg = LOCAL_FFMPEG if os.path.exists(LOCAL_FFMPEG) else shutil.which("ffmpeg")
     if not ffmpeg:
@@ -256,7 +199,7 @@ def download_hls_to_mp3(url, out_path, cancel_getter, on_progress=None, user_age
 
     part_path = out_path + ".part"
     for attempt in range(1, MAX_DOWNLOAD_RETRIES + 1):
-        if cancel_getter(): raise RuntimeError("Отменено пользователем")
+        if cancel_getter(): raise RuntimeError("Отменено")
         for p in (part_path, out_path):
             if os.path.exists(p):
                 try: os.remove(p)
@@ -268,9 +211,7 @@ def download_hls_to_mp3(url, out_path, cancel_getter, on_progress=None, user_age
         else:
             cmd = [ffmpeg, "-y", "-loglevel", "info", "-user_agent", user_agent, "-i", url, "-vn", "-c:a", "libmp3lame", "-b:a", "320k", "-f", "mp3", part_path]
             
-        _log.info(f"ffmpeg попытка {attempt}/{MAX_DOWNLOAD_RETRIES} (copy={use_copy})")
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
         stderr_lines = []; parsed_bitrate = [None]
         def read_stderr():
             try:
@@ -280,73 +221,64 @@ def download_hls_to_mp3(url, out_path, cancel_getter, on_progress=None, user_age
                         m = re.search(r'Audio:\s+\w+[^,]*,.*?(\d+)\s+kb/s', s)
                         if m: parsed_bitrate[0] = int(m.group(1))
             except Exception: pass
-
         t = threading.Thread(target=read_stderr, daemon=True); t.start()
 
         last_size, last_progress_ts, last_live_ts = 0, time.time(), 0
         cancelled = False
-
         while True:
-            time.sleep(WATCHDOG_INTERVAL)
+            time.sleep(3)
             if cancel_getter():
-                cancelled = True; p.terminate()
-                try: p.wait(timeout=3)
-                except Exception: p.kill()
-                try:
-                    if os.path.exists(part_path): os.remove(part_path)
-                except OSError: pass
-                break
+                cancelled = True; p.terminate(); p.wait(); break
             if p.poll() is not None: break
             cur_size = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             now = time.time()
-            if on_progress and (now - last_live_ts) >= LIVE_UPDATE_INTERVAL:
+            if on_progress and (now - last_live_ts) >= 3:
                 on_progress(cur_size, parsed_bitrate[0]); last_live_ts = now
             if cur_size > last_size:
                 last_size, last_progress_ts = cur_size, now
             else:
-                if now - last_progress_ts > STALL_TIMEOUT:
-                    p.terminate()
-                    try: p.wait(timeout=3)
-                    except Exception: p.kill()
-                    try:
-                        if os.path.exists(part_path): os.remove(part_path)
-                    except OSError: pass
-                    break
+                if now - last_progress_ts > 60:
+                    p.terminate(); p.wait(); break
 
         t.join(timeout=3)
-        try:
-            if p.stderr: p.stderr.close()
-        except Exception: pass
-        stderr_text = "".join(stderr_lines)
-        if on_progress:
-            final_size = os.path.getsize(part_path) if os.path.exists(part_path) else 0
-            on_progress(final_size, parsed_bitrate[0])
-
-        if cancelled: raise RuntimeError("Отменено пользователем")
+        if cancelled: raise RuntimeError("Отменено")
         if p.returncode == 0 and os.path.exists(part_path) and os.path.getsize(part_path) > 1024:
             try: os.replace(part_path, out_path)
-            except OSError as e: raise RuntimeError(f"Ошибка переименования: {e}")
-            return parsed_bitrate[0] or parse_ffmpeg_bitrate(stderr_text)
-
-        try:
-            if os.path.exists(part_path): os.remove(part_path)
-        except OSError: pass
-        if attempt == MAX_DOWNLOAD_RETRIES:
-            raise RuntimeError(f"ffmpeg не справился: {stderr_text[-400:]}")
+            except OSError: pass
+            return parsed_bitrate[0]
+        if attempt == MAX_DOWNLOAD_RETRIES: raise RuntimeError("ffmpeg fail")
     raise RuntimeError("Не удалось скачать")
 
 
 class App:
     def __init__(self, root):
         self.root = root
-        self.style = ttk.Style(theme="darkly")
-        root.title("VK Music Downloader (macOS)")
+        root.title("VK Music Downloader")
         root.geometry("1150x750")
-        root.minsize(1000, 600)
+        
+        # Настраиваем темную тему для стандартного ttk
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure(".", background="#222", foreground="#eee", fieldbackground="#333")
+        style.configure("TFrame", background="#222")
+        style.configure("TLabel", background="#222", foreground="#eee")
+        style.configure("TLabelframe", background="#222", foreground="#00cc66")
+        style.configure("TLabelframe.Label", background="#222", foreground="#00cc66")
+        style.configure("TButton", background="#333", foreground="#eee", borderwidth=1)
+        style.map("TButton", background=[('active', '#444')])
+        style.configure("Treeview", background="#111", foreground="#eee", fieldbackground="#111")
+        style.configure("Treeview.Heading", background="#333", foreground="#00cc66")
+        style.map("Treeview", background=[('selected', '#005544')])
+        style.configure("TEntry", fieldbackground="#333", foreground="#eee")
+        style.configure("TNotebook", background="#222", tabmargins=[2, 5, 2, 0])
+        style.configure("TNotebook.Tab", background="#333", foreground="#aaa", padding=[10, 5])
+        style.map("TNotebook.Tab", background=[("selected", "#444")], foreground=[("selected", "#00cc66")])
+        style.configure("TProgressbar", background="#00cc66")
+        
+        root.configure(bg="#222")
 
         self.cfg = load_cfg()
         self.service = None
-        self.user_id = 0
         self.token = ""
         self.tracks = []
         self.selected = set()
@@ -360,14 +292,11 @@ class App:
         self._twofa_event = threading.Event()
         self._twofa_code = None
         
-        # VLC для плеера (--no-video чтобы не открывал левые окна)
-        self.vlc_instance = vlc.Instance("--no-video --quiet")
-        self.vlc_player = self.vlc_instance.media_player_new()
-        
-        # Состояние плеера
+        self.vlc_instance = None
+        self.vlc_player = None
+        self._vlc_initialized = False
         self.current_playlist = []
         self.current_track_index = -1
-        self.is_playing = False
         self._seek_dragging = False
 
         self._create_ui()
@@ -396,7 +325,7 @@ class App:
         self._build_player_tab()
 
         self.var_status = tk.StringVar(value="Готов")
-        ttk.Label(self.root, textvariable=self.var_status, anchor="w", relief=tk.SUNKEN, padding=(6, 3)).pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Label(self.root, textvariable=self.var_status, relief=tk.SUNKEN, padding=(6, 3)).pack(fill=tk.X, side=tk.BOTTOM)
 
     def _build_settings_tab(self):
         frame = ttk.LabelFrame(self.tab_settings, text="Общие настройки", padding=10)
@@ -407,35 +336,20 @@ class App:
         ed = ttk.Entry(frame, textvariable=self.var_dir, width=50)
         ed.grid(row=0, column=1, padx=5, pady=5)
         enable_clipboard(ed)
-        ttk.Button(frame, text="…", command=self._pick_dir, bootstyle="outline-secondary").grid(row=0, column=2, padx=5)
+        ttk.Button(frame, text="…", command=self._pick_dir).grid(row=0, column=2, padx=5)
 
-        ttk.Label(frame, text="Тема оформления:").grid(row=1, column=0, sticky="w", pady=5)
-        self.var_theme = tk.StringVar(value="darkly")
-        themes = ["darkly", "cyborg", "solar", "superhero", "vapor"]
-        combo = ttk.Combobox(frame, textvariable=self.var_theme, values=themes, state="readonly")
-        combo.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-        ttk.Button(frame, text="Применить", command=self._apply_theme, bootstyle="outline-primary").grid(row=1, column=2, padx=5)
+        ttk.Button(self.tab_settings, text="Сохранить настройки", command=self._save_settings).pack(pady=10)
 
-        ttk.Button(self.tab_settings, text="Сохранить настройки", command=self._save_settings, bootstyle="success").pack(pady=10)
-
-        # --- Блок "О программе" ---
         info_frame = ttk.LabelFrame(self.tab_settings, text="О программе", padding=10)
         info_frame.pack(fill=tk.X, pady=10)
-        
         vlc_status = "Локальный" if os.path.exists(os.path.join(LOCAL_VLC_DIR, "lib", "libvlc.dylib")) else "Системный"
-        
-        ttk.Label(info_frame, text="VK Music Downloader v2.5", font=("Helvetica", 12, "bold")).pack(anchor="w", pady=(0, 5))
+        ttk.Label(info_frame, text="VK Music Downloader v3.0").pack(anchor="w", pady=(0, 5))
         ttk.Label(info_frame, text="Автор: Suncho").pack(anchor="w")
-        link = ttk.Label(info_frame, text="github.com/SteepCanyon", foreground="#00aaff", cursor="hand2")
+        link = tk.Label(info_frame, text="github.com/SteepCanyon", fg="#00aaff", bg="#222", cursor="hand2")
         link.pack(anchor="w", pady=(0, 10))
         link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/SteepCanyon"))
-        
         ttk.Label(info_frame, text=f"VLC: {vlc_status}").pack(anchor="w")
-        
-        ttk.Button(info_frame, text="🔄 Проверить обновления", command=self._check_updates, bootstyle="info").pack(anchor="w", pady=(10, 0))
-
-    def _check_updates(self):
-        messagebox.showinfo("Обновления", "Проверка обновлений с GitHub пока в разработке.\nСледите за репозиторием: github.com/SteepCanyon")
+        ttk.Button(info_frame, text="🔄 Проверить обновления", command=self._check_updates).pack(anchor="w", pady=(10, 0))
 
     def _build_login_tab(self):
         frame = ttk.LabelFrame(self.tab_login, text="Авторизация", padding=10)
@@ -444,17 +358,17 @@ class App:
         ttk.Label(frame, text="Токен (если есть готовый):").grid(row=0, column=0, sticky="nw")
         tf = ttk.Frame(frame)
         tf.grid(row=0, column=1, columnspan=2, sticky="we", padx=4)
-        self.txt_token = tk.Text(tf, height=2, wrap="char", font=("Consolas", 9), undo=True, relief=tk.FLAT)
+        self.txt_token = tk.Text(tf, height=2, wrap="char", font=("Consolas", 9), undo=True, relief=tk.FLAT, bg="#111", fg="#eee")
         sb = ttk.Scrollbar(tf, orient="vertical", command=self.txt_token.yview)
         self.txt_token.configure(yscrollcommand=sb.set)
         self.txt_token.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         enable_clipboard(self.txt_token)
 
-        login_frame = ttk.LabelFrame(self.tab_login, text="Вход по логину/паролю (получение токена)", padding=10)
+        login_frame = ttk.LabelFrame(self.tab_login, text="Вход по логину/паролю", padding=10)
         login_frame.pack(fill=tk.X, pady=10)
 
-        ttk.Label(login_frame, text="Логин (телефон/email):").pack(side=tk.LEFT)
+        ttk.Label(login_frame, text="Логин:").pack(side=tk.LEFT)
         self.var_login = tk.StringVar()
         e_login = ttk.Entry(login_frame, textvariable=self.var_login, width=22)
         e_login.pack(side=tk.LEFT, padx=4)
@@ -466,13 +380,12 @@ class App:
         e_pass.pack(side=tk.LEFT, padx=4)
         enable_clipboard(e_pass)
 
-        ttk.Button(login_frame, text="Войти и получить токен", command=self.login_vk, bootstyle="primary").pack(side=tk.LEFT, padx=10)
+        ttk.Button(login_frame, text="Войти и получить токен", command=self.login_vk).pack(side=tk.LEFT, padx=10)
 
-        self.list_progress = ttk.Progressbar(self.tab_login, mode="determinate", bootstyle="success-striped")
+        self.list_progress = ttk.Progressbar(self.tab_login, mode="determinate")
         self.list_progress.pack(fill=tk.X, pady=10)
 
     def _build_downloader_tab(self):
-        # Верхняя панель: User ID и загрузка плейлиста
         top_bar = ttk.Frame(self.tab_downloader)
         top_bar.pack(fill=tk.X, pady=5)
         
@@ -481,10 +394,9 @@ class App:
         e_uid = ttk.Entry(top_bar, textvariable=self.var_uid, width=15)
         e_uid.pack(side=tk.LEFT, padx=5)
         enable_clipboard(e_uid)
-        ttk.Button(top_bar, text="⬇ Загрузить мой плейлист", command=self.load_playlist, bootstyle="success").pack(side=tk.LEFT, padx=5)
+        ttk.Button(top_bar, text="⬇ Загрузить плейлист", command=self.load_playlist).pack(side=tk.LEFT, padx=5)
 
-
-        # Панель поиска
+        # ПАНЕЛЬ ПОИСКА (вернул на место!)
         search_bar = ttk.Frame(self.tab_downloader)
         search_bar.pack(fill=tk.X, pady=5)
         ttk.Label(search_bar, text="🔍 Поиск в ВК:").pack(side=tk.LEFT)
@@ -493,17 +405,15 @@ class App:
         self.ent_query.pack(side=tk.LEFT, padx=5)
         self.ent_query.bind("<Return>", lambda e: self.search_vk())
         enable_clipboard(self.ent_query)
-        ttk.Button(search_bar, text="Найти", command=self.search_vk, bootstyle="info").pack(side=tk.LEFT)
+        ttk.Button(search_bar, text="Найти", command=self.search_vk).pack(side=tk.LEFT)
 
-        # Фильтры
         filt = ttk.Frame(self.tab_downloader)
-
         filt.pack(fill=tk.X, pady=5)
         self.var_hide_dl = tk.BooleanVar(value=False)
-        ttk.Checkbutton(filt, text="Скрыть скачанные", variable=self.var_hide_dl, command=self._refresh_tree, bootstyle="round-toggle").pack(side=tk.LEFT)
+        ttk.Checkbutton(filt, text="Скрыть скачанные", variable=self.var_hide_dl, command=self._refresh_tree).pack(side=tk.LEFT)
         self.var_force = tk.BooleanVar(value=False)
-        ttk.Checkbutton(filt, text="Перекачивать", variable=self.var_force, bootstyle="round-toggle").pack(side=tk.LEFT, padx=(16, 0))
-        ttk.Button(filt, text="🔄 Обновить статус", command=self._rescan, bootstyle="outline-info").pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Checkbutton(filt, text="Перекачивать", variable=self.var_force).pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Button(filt, text="🔄 Обновить", command=self._rescan).pack(side=tk.LEFT, padx=(16, 0))
         ttk.Label(filt, text="Фильтр:").pack(side=tk.LEFT, padx=(16, 4))
         self.var_search = tk.StringVar()
         self.var_search.trace_add("write", lambda *_: self._refresh_tree())
@@ -513,7 +423,6 @@ class App:
         self.lbl_stats = ttk.Label(filt, text="")
         self.lbl_stats.pack(side=tk.RIGHT)
 
-        # Таблица
         mid = ttk.LabelFrame(self.tab_downloader, text="Треки", padding=4)
         mid.pack(fill=tk.BOTH, expand=True, pady=5)
         cols = ("sel", "dl", "num", "artist", "title", "duration", "bitrate", "size")
@@ -530,69 +439,108 @@ class App:
         sb2.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<space>", lambda e: self._toggle_sel())
-        self.tree.tag_configure("downloading", background="#2a4a6a")
 
-        # Кнопки управления
         bot = ttk.Frame(self.tab_downloader)
         bot.pack(fill=tk.X, pady=5)
-        ttk.Button(bot, text="Выбрать всё", command=self.select_all, bootstyle="outline-secondary").pack(side=tk.LEFT, padx=2)
-        ttk.Button(bot, text="Снять выбор", command=self.deselect_all, bootstyle="outline-secondary").pack(side=tk.LEFT, padx=2)
-        self.btn_dl_sel = ttk.Button(bot, text="⬇ Скачать выбранные", command=lambda: self.start_dl(True), bootstyle="success")
+        ttk.Button(bot, text="Выбрать всё", command=self.select_all).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bot, text="Снять", command=self.deselect_all).pack(side=tk.LEFT, padx=2)
+        self.btn_dl_sel = ttk.Button(bot, text="⬇ Скачать выбранные", command=lambda: self.start_dl(True))
         self.btn_dl_sel.pack(side=tk.LEFT, padx=(16, 2))
-        self.btn_dl_all = ttk.Button(bot, text="⬇⬇ Скачать ВСЁ", command=lambda: self.start_dl(False), bootstyle="success")
+        self.btn_dl_all = ttk.Button(bot, text="⬇⬇ Скачать ВСЁ", command=lambda: self.start_dl(False))
         self.btn_dl_all.pack(side=tk.LEFT, padx=2)
-        self.btn_cancel = ttk.Button(bot, text="✖ Отмена", command=self.cancel_dl, state="disabled", bootstyle="danger")
+        self.btn_cancel = ttk.Button(bot, text="✖ Отмена", command=self.cancel_dl, state="disabled")
         self.btn_cancel.pack(side=tk.LEFT, padx=2)
-        self.progress = ttk.Progressbar(bot, mode="determinate", bootstyle="success-striped")
+        self.progress = ttk.Progressbar(bot, mode="determinate")
         self.progress.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=8)
 
     def _build_player_tab(self):
-        # Верхняя часть: Информация о треке
         info_frame = ttk.Frame(self.tab_player)
         info_frame.pack(fill=tk.X, pady=10)
-        
-        self.lbl_now_playing = ttk.Label(info_frame, text="Ничего не играет", font=("Helvetica", 16, "bold"), anchor="center")
+        self.lbl_now_playing = ttk.Label(info_frame, text="Ничего не играет", font=("Helvetica", 16, "bold"))
         self.lbl_now_playing.pack(fill=tk.X)
 
-        # Ползунок перемотки
+        self.info_frame = ttk.LabelFrame(self.tab_player, text="Информация о треке", padding=10)
+        self.info_frame.pack(fill=tk.X, pady=5)
+        self.lbl_info = ttk.Label(self.info_frame, text="—", justify=tk.LEFT)
+        self.lbl_info.pack(anchor="w")
+
         self.player_scale = ttk.Scale(self.tab_player, from_=0, to=100, orient=tk.HORIZONTAL, command=self._on_seek)
         self.player_scale.pack(fill=tk.X, pady=10)
         self.player_scale.bind("<ButtonPress-1>", lambda e: setattr(self, "_seek_dragging", True))
         self.player_scale.bind("<ButtonRelease-1>", lambda e: setattr(self, "_seek_dragging", False))
 
-        # Панель управления плеером
         ctrl = ttk.Frame(self.tab_player)
         ctrl.pack(fill=tk.X, pady=5)
+        ttk.Button(ctrl, text="⏮", command=self._player_prev, width=3).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrl, text="▶", command=self._player_play, width=3).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrl, text="⏸", command=self._player_pause, width=3).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrl, text="⏹", command=self._player_stop, width=3).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrl, text="⏭", command=self._player_next, width=3).pack(side=tk.LEFT, padx=2)
         
-        ttk.Button(ctrl, text="⏮", command=self._player_prev, bootstyle="outline-secondary", width=3).pack(side=tk.LEFT, padx=2)
-        ttk.Button(ctrl, text="▶", command=self._player_play, bootstyle="success", width=3).pack(side=tk.LEFT, padx=2)
-        ttk.Button(ctrl, text="⏸", command=self._player_pause, bootstyle="warning", width=3).pack(side=tk.LEFT, padx=2)
-        ttk.Button(ctrl, text="⏹", command=self._player_stop, bootstyle="danger", width=3).pack(side=tk.LEFT, padx=2)
-        ttk.Button(ctrl, text="⏭", command=self._player_next, bootstyle="outline-secondary", width=3).pack(side=tk.LEFT, padx=2)
-        
-        # Кнопка повтора
         self.var_loop = tk.BooleanVar(value=False)
-        ttk.Checkbutton(ctrl, text="🔁 Цикл", variable=self.var_loop, bootstyle="round-toggle").pack(side=tk.LEFT, padx=(20, 0))
+        ttk.Checkbutton(ctrl, text="🔁 Цикл", variable=self.var_loop).pack(side=tk.LEFT, padx=(20, 0))
 
         ttk.Label(ctrl, text="Громкость:").pack(side=tk.LEFT, padx=(20, 5))
         self.vol_scale = ttk.Scale(ctrl, from_=0, to=100, orient=tk.HORIZONTAL, length=150, command=self._on_volume_change)
         self.vol_scale.set(70)
         self.vol_scale.pack(side=tk.LEFT)
 
-        # Список файлов для плеера
-        self.player_listbox = tk.Listbox(self.tab_player, bg="#1a1a1a", fg="#e0e0e0", selectbackground="#00cc66", selectforeground="#000", height=8, relief=tk.FLAT)
+        self.player_listbox = tk.Listbox(self.tab_player, bg="#111", fg="#eee", selectbackground="#00cc66", selectforeground="#000", height=8, relief=tk.FLAT)
         self.player_listbox.pack(fill=tk.BOTH, expand=True, pady=10)
         self.player_listbox.bind('<Double-1>', lambda e: self._player_play())
+        self.player_listbox.bind('<<ListboxSelect>>', self._on_player_select)
         
-        ttk.Button(self.tab_player, text="🔄 Обновить список из папки", command=self._load_player_files, bootstyle="info").pack(pady=5)
+        btn_frame = ttk.Frame(self.tab_player)
+        btn_frame.pack(pady=5)
+        ttk.Button(btn_frame, text="🔄 Обновить список", command=self._load_player_files).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🗑 Удалить с диска", command=self._player_delete).pack(side=tk.LEFT, padx=5)
 
-    def _apply_theme(self):
-        self.style.theme_use(self.var_theme.get())
-        _log.info(f"Тема изменена на: {self.var_theme.get()}")
+    def _check_updates(self):
+        import threading
+        def worker():
+            try:
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                r = requests.get(url, timeout=10)
+                if r.status_code != 200:
+                    messagebox.showerror("Обновление", f"Не удалось проверить обновления (HTTP {r.status_code})")
+                    return
+                data = r.json()
+                latest = data.get("tag_name", "").lstrip("v")
+                if latest and latest != APP_VERSION:
+                    msg = f"Доступна новая версия: {latest}\nТекущая версия: {APP_VERSION}\n\nПерейти на страницу загрузки?"
+                    if messagebox.askyesno("Обновление", msg):
+                        import webbrowser
+                        webbrowser.open(data.get("html_url", ""))
+                else:
+                    messagebox.showinfo("Обновление", f"У вас последняя версия: {APP_VERSION}")
+            except Exception as e:
+                messagebox.showerror("Обновление", f"Ошибка: {e}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _check_updates(self):
+        import threading
+        def worker():
+            try:
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                r = requests.get(url, timeout=10)
+                if r.status_code != 200:
+                    messagebox.showerror("Обновление", f"Не удалось проверить обновления (HTTP {r.status_code})")
+                    return
+                data = r.json()
+                latest = data.get("tag_name", "").lstrip("v")
+                if latest and latest != APP_VERSION:
+                    msg = f"Доступна новая версия: {latest}\nТекущая версия: {APP_VERSION}\n\nПерейти на страницу загрузки?"
+                    if messagebox.askyesno("Обновление", msg):
+                        import webbrowser
+                        webbrowser.open(data.get("html_url", ""))
+                else:
+                    messagebox.showinfo("Обновление", f"У вас последняя версия: {APP_VERSION}")
+            except Exception as e:
+                messagebox.showerror("Обновление", f"Ошибка: {e}")
+        threading.Thread(target=worker, daemon=True).start()
 
     def _save_settings(self):
         self.cfg["download_dir"] = self.var_dir.get()
-        self.cfg["theme"] = self.var_theme.get()
         save_cfg(self.cfg)
         messagebox.showinfo("Настройки", "Сохранено.")
 
@@ -607,7 +555,6 @@ class App:
         if self.cfg.get("user_agent"): self.user_agent = self.cfg["user_agent"]
         if self.cfg.get("user_id"): self.var_uid.set(str(self.cfg["user_id"]))
         if self.cfg.get("download_dir"): self.var_dir.set(self.cfg["download_dir"])
-        if self.cfg.get("theme"): self.var_theme.set(self.cfg["theme"]); self._apply_theme()
         self.root.after(200, self._rescan)
         self.root.after(300, self._load_player_files)
 
@@ -624,15 +571,11 @@ class App:
         self._twofa_event.clear(); self._twofa_code = None
         def show_dialog():
             from tkinter import simpledialog
-            code = simpledialog.askstring(
-                "Двухфакторная аутентификация",
-                "VK может прислать SMS или позвонить с короткого номера.\n"
-                "Если поступил звонок, введите последние 4 цифры номера, с которого звонили.\n\n"
-                "Введите код:", parent=self.root)
+            code = simpledialog.askstring("2FA", "VK может прислать SMS или позвонить с короткого номера.\nЕсли поступил звонок, введите последние 4 цифры номера.\n\nВведите код:", parent=self.root)
             self._twofa_code = code; self._twofa_event.set()
         self.root.after(0, show_dialog)
         self._twofa_event.wait(timeout=180)
-        if not self._twofa_code: raise RuntimeError("Код 2FA не введён")
+        if not self._twofa_code: raise RuntimeError("Код не введён")
         return self._twofa_code.strip()
 
     def _login_worker(self, login, password):
@@ -643,14 +586,12 @@ class App:
                 try: receiver = TokenReceiver(login=login, password=password)
                 except TypeError: receiver = TokenReceiver(login, password)
             try: ok = receiver.auth(on_2fa=self._ask_2fa)
-            except TypeError:
-                self.q.put(("status", "Если VK запросит код 2FA — он появится в консоли"))
-                ok = receiver.auth()
+            except TypeError: ok = receiver.auth()
             if ok:
                 token = receiver.get_token()
                 ua = getattr(getattr(receiver, "client", None), "user_agent", UA) or UA
                 self.q.put(("token_received", (token, ua)))
-            else: self.q.put(("error", "Не удалось авторизоваться. Проверьте логин/пароль."))
+            else: self.q.put(("error", "Не удалось авторизоваться."))
         except Exception as e: self.q.put(("error", f"Ошибка входа: {e}"))
         finally: self.q.put(("busy", (False,)))
 
@@ -670,8 +611,6 @@ class App:
                 if k == "status": self.var_status.set(p)
                 elif k == "progress":
                     c, t = p; self.progress["maximum"] = max(t, 1); self.progress["value"] = c
-                elif k == "list_progress":
-                    c, t = p; self.list_progress["maximum"] = max(t, 1); self.list_progress["value"] = c
                 elif k == "playlist":
                     self.tracks = p; self._refresh_tree(); self._rescan()
                 elif k == "rescan":
@@ -685,8 +624,8 @@ class App:
                     self.txt_token.delete("1.0", "end"); self.txt_token.insert("1.0", token)
                     self.cfg["token"] = token; self.cfg["user_agent"] = ua
                     save_cfg(self.cfg)
-                    self.var_status.set("Токен получен и сохранён")
-                    messagebox.showinfo("Успех", "Токен получен. Теперь можно загрузить плейлист.")
+                    self.var_status.set("Токен получен")
+                    messagebox.showinfo("Успех", "Токен получен.")
                 elif k == "downloaded_one":
                     fname, info = p; self.downloaded[fname] = info; self._update_row(fname, info)
                 elif k == "done":
@@ -704,20 +643,18 @@ class App:
         if not iid or not self.tree.exists(iid): return
         self.tree.set(iid, "dl", "↓")
         self.tree.set(iid, "bitrate", f"{bitrate} kbps" if bitrate else "…")
-        self.tree.set(iid, "size", self._fmt_size(size) + "…")
-        self.tree.item(iid, tags=("downloading",))
+        self.tree.set(iid, "size", f"{size/1024/1024:.1f} МБ…")
 
     def _refresh_tree(self):
         for iid in self.tree.get_children(): self.tree.delete(iid)
         self.selected.clear(); self._fname_to_iid.clear()
         hide = self.var_hide_dl.get(); q = self.var_search.get().strip().lower()
         total, shown, dlc = len(self.tracks), 0, 0
-
         music_dir = resolve_music_dir(self.var_dir.get().strip())
         disk_files = None
         if music_dir and os.path.isdir(music_dir):
             try: disk_files = {f for f in os.listdir(music_dir) if f.lower().endswith(".mp3")}
-            except OSError: disk_files = None
+            except OSError: pass
 
         for i, s in enumerate(self.tracks):
             artist = (getattr(s, "artist", "") or "").strip()
@@ -759,7 +696,6 @@ class App:
             self.tree.set(iid, "dl", "✓" if (size > 0 or br) else "—")
             self.tree.set(iid, "bitrate", f"{br} kbps" if br else "—")
             self.tree.set(iid, "size", self._fmt_size(size) if size else "—")
-            self.tree.item(iid, tags=())
 
     @staticmethod
     def _fmt_size(n):
@@ -800,10 +736,6 @@ class App:
         music = resolve_music_dir(base); out = {}
         if music and os.path.isdir(music):
             for f in os.listdir(music):
-                if f.endswith(".mp3.part"):
-                    try: os.remove(os.path.join(music, f))
-                    except OSError: pass
-                    continue
                 if not f.lower().endswith(".mp3"): continue
                 p = os.path.join(music, f)
                 if not os.path.isfile(p) or os.path.getsize(p) < MIN_FILE_SIZE: continue
@@ -838,11 +770,9 @@ class App:
                 if len(batch) < 200: break
                 offset += 200
             if not songs: raise RuntimeError("Нет треков")
-            self.user_id = uid
             self.q.put(("playlist", songs))
         except Exception as e: self.q.put(("error", f"Ошибка: {e}"))
         finally: self.q.put(("busy", (False,)))
-
 
     def search_vk(self):
         if self.busy: return
@@ -872,7 +802,6 @@ class App:
             self.q.put(("busy", (False,)))
 
     def start_dl(self, only_sel):
-
         if self.busy or not self.token: return
         if only_sel:
             idxs = sorted(int(iid[1:]) for iid in self.selected)
@@ -926,9 +855,6 @@ class App:
         if errs: msg += f"\n\nОшибок: {len(errs)}\n" + "\n".join(errs[:5])
         self.q.put(("progress", (total, total))); self.q.put(("done", msg))
 
-    # ========================================================================
-    # ПЛЕЕР (VLC)
-    # ========================================================================
     def _load_player_files(self):
         self.player_listbox.delete(0, tk.END)
         base_dir = self.var_dir.get().strip(); music_dir = resolve_music_dir(base_dir)
@@ -936,16 +862,109 @@ class App:
         self.current_playlist = sorted([f for f in os.listdir(music_dir) if f.lower().endswith(".mp3")])
         for f in self.current_playlist: 
             self.player_listbox.insert(tk.END, f)
-        _log.info(f"Плеер: загружено {len(self.current_playlist)} файлов из {music_dir}")
+
+    def _on_player_select(self, event=None):
+        sel = self.player_listbox.curselection()
+        if not sel: return
+        filename = self.player_listbox.get(sel[0])
+        base_dir = self.var_dir.get().strip()
+        music_dir = resolve_music_dir(base_dir)
+        filepath = os.path.join(music_dir, filename)
+        self._update_track_info(filepath)
+
+    def _update_track_info(self, filepath):
+        if not filepath or not os.path.exists(filepath):
+            self.lbl_info.config(text="—")
+            return
+        try:
+            size = os.path.getsize(filepath)
+            size_mb = size / (1024 * 1024)
+            br, sz, dur = read_mp3_info(filepath)
+            duration_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
+            tags_info = ""
+            if HAS_MUTAGEN:
+                try:
+                    from mutagen.mp3 import MP3
+                    audio = MP3(filepath)
+                    if audio.tags:
+                        def _tag(tag):
+                            return audio.tags.get(tag, [""])[0] if audio.tags.get(tag) else ""
+                        artist = _tag('TPE1')
+                        title = _tag('TIT2')
+                        album = _tag('TALB')
+                        year = _tag('TDRC')
+                        genre = _tag('TCON')
+                        parts = []
+                        if artist: parts.append(f"Исполнитель: {artist}")
+                        if title: parts.append(f"Название: {title}")
+                        if album: parts.append(f"Альбом: {album}")
+                        if year: parts.append(f"Год: {year}")
+                        if genre: parts.append(f"Жанр: {genre}")
+                        tags_info = "\n" + "\n".join(parts) if parts else ""
+                except Exception:
+                    pass
+            text = f"Битрейт: {br if br else '?'} kbps\nРазмер: {size_mb:.2f} МБ\nДлительность: {duration_str}{tags_info}"
+            self.lbl_info.config(text=text)
+        except Exception as e:
+            self.lbl_info.config(text=f"Ошибка чтения: {e}")
+
+    def _player_delete(self):
+        sel = self.player_listbox.curselection()
+        if not sel:
+            messagebox.showwarning("Плеер", "Выберите трек для удаления")
+            return
+        idx = sel[0]
+        filename = self.player_listbox.get(idx)
+        base_dir = self.var_dir.get().strip()
+        music_dir = resolve_music_dir(base_dir)
+        filepath = os.path.join(music_dir, filename)
+        if not os.path.exists(filepath):
+            messagebox.showerror("Плеер", f"Файл не найден: {filename}")
+            return
+        if not messagebox.askyesno("Удаление", f"Удалить файл с диска?\n\n{filename}"):
+            return
+        if self._vlc_initialized and self.vlc_player and self.current_track_index == idx:
+            try:
+                self._player_stop()
+            except Exception:
+                pass
+        try:
+            os.remove(filepath)
+            self.player_listbox.delete(idx)
+            if idx < len(self.current_playlist):
+                self.current_playlist.pop(idx)
+            if self.current_track_index >= len(self.current_playlist):
+                self.current_track_index = -1
+            self.lbl_now_playing.config(text="Ничего не играет")
+            self.lbl_info.config(text="—")
+            self._rescan()
+            messagebox.showinfo("Плеер", f"Удалено: {filename}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось удалить: {e}")
+
+    def _ensure_vlc(self):
+        if self._vlc_initialized: return self.vlc_player is not None
+        self._vlc_initialized = True
+        try:
+            import vlc
+            self.vlc_instance = vlc.Instance("--no-video --quiet")
+            self.vlc_player = self.vlc_instance.media_player_new()
+            return True
+        except Exception as e:
+            _log.error(f"VLC error: {e}")
+            return False
 
     def _player_play(self):
+        if not self._ensure_vlc():
+            messagebox.showerror("Плеер", "VLC не инициализирован. Проверьте логи.")
+            return
         sel = self.player_listbox.curselection()
         if not sel and self.current_track_index == -1:
             if self.current_playlist:
                 self.current_track_index = 0
                 sel = (0,)
             else:
-                messagebox.showwarning("Плеер", "Список треков пуст"); return
+                messagebox.showwarning("Плеер", "Список пуст"); return
         elif sel:
             self.current_track_index = sel[0]
         
@@ -959,26 +978,21 @@ class App:
         media = self.vlc_instance.media_new(filepath)
         self.vlc_player.set_media(media)
         self.vlc_player.play()
-        self.is_playing = True
         
-        # Обновляем интерфейс
         self.lbl_now_playing.config(text=filename)
+        self._update_track_info(filepath)
         self.player_listbox.selection_clear(0, tk.END)
         self.player_listbox.selection_set(self.current_track_index)
-        self.var_status.set(f"▶ Воспроизведение: {filename}")
+        self.var_status.set(f"▶ {filename}")
         self._on_volume_change(self.vol_scale.get())
 
     def _player_pause(self):
-        if self.vlc_player.is_playing():
+        if self._ensure_vlc() and self.vlc_player.is_playing():
             self.vlc_player.pause()
-            self.is_playing = False
-        else:
-            self.vlc_player.play()
-            self.is_playing = True
 
     def _player_stop(self):
-        self.vlc_player.stop()
-        self.is_playing = False
+        if self._ensure_vlc():
+            self.vlc_player.stop()
         self.current_track_index = -1
         self.player_scale.set(0)
         self.lbl_now_playing.config(text="Ничего не играет")
@@ -999,7 +1013,7 @@ class App:
         self._player_play()
 
     def _on_seek(self, val):
-        if not self._seek_dragging: return
+        if not self._seek_dragging or not self._ensure_vlc(): return
         try:
             length = self.vlc_player.get_length()
             if length > 0:
@@ -1009,28 +1023,24 @@ class App:
 
     def _update_player_progress(self):
         try:
-            if self.vlc_player.is_playing() and not self._seek_dragging:
+            if self._ensure_vlc() and self.vlc_player.is_playing() and not self._seek_dragging:
                 length = self.vlc_player.get_length()
                 time = self.vlc_player.get_time()
                 if length > 0:
-                    pos = (time / length) * 100.0
-                    self.player_scale.set(pos)
-            
-            # Логика повтора
-            if self.vlc_player.get_state() == vlc.State.Ended:
-                if self.var_loop.get():
-                    self._player_next()
-                else:
-                    self._player_stop()
+                    self.player_scale.set((time / length) * 100.0)
+            if self._ensure_vlc() and self.vlc_player.get_state() == 6: # Ended
+                if self.var_loop.get(): self._player_next()
+                else: self._player_stop()
         except Exception: pass
         self.root.after(500, self._update_player_progress)
 
     def _on_volume_change(self, val):
-        try: self.vlc_player.audio_set_volume(int(float(val)))
-        except Exception: pass
+        if self._ensure_vlc():
+            try: self.vlc_player.audio_set_volume(int(float(val)))
+            except Exception: pass
 
 def main():
-    root = ttk.Window(themename="darkly")
+    root = tk.Tk()
     App(root)
     root.mainloop()
 
