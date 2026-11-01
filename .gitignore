@@ -13,7 +13,7 @@ build/
 *.app
 *.exe
 
-# Тяжелые зависимости (VLC и ffmpeg) - не заливаем в репозиторий
+# Тяжелые зависимости (VLC и ffmpeg)
 vlc_bundle/
 ffmpeg/
 
@@ -21,6 +21,10 @@ ffmpeg/
 backups/
 logs/
 *.log
+
+# Яндекс музыка (не относится к проекту)
+ym_app.py
+yandex-music-downloader/
 
 # Системный мусор
 .DS_Store
