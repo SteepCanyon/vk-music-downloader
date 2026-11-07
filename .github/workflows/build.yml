@@ -44,18 +44,34 @@ jobs:
       with:
         python-version: '3.12'
     - name: Install Dependencies
+      run: python -m pip install --upgrade pip && pip install pyinstaller requests mutagen vkpymusic python-vlc
+    - name: Fetch ffmpeg (static build)
+      shell: pwsh
       run: |
-        choco install ffmpeg vlc -y
-        pip install pyinstaller requests mutagen vkpymusic python-vlc
-        mkdir vlc_bundle, ffmpeg
-        xcopy "C:\Program Files\VideoLAN\VLC\*" "vlc_bundle\" /E /I /H /Y
-        copy "C:\ProgramData\chocolatey\bin\ffmpeg.exe" "ffmpeg\ffmpeg.exe"
+        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+        Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+        $exe = Get-ChildItem ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+        if (-not $exe) { throw "ffmpeg.exe not found in archive" }
+        New-Item -ItemType Directory -Force -Path ffmpeg | Out-Null
+        Copy-Item $exe.FullName "ffmpeg\ffmpeg.exe"
+    - name: Fetch VLC (portable)
+      shell: pwsh
+      run: |
+        $index = Invoke-WebRequest -Uri "https://get.videolan.org/vlc/last/win64/" -UseBasicParsing
+        $zip = $index.Links | Where-Object { $_.href -match '^vlc-.*-win64\.zip$' } | Select-Object -First 1
+        if (-not $zip) { throw "VLC win64 zip not found on get.videolan.org" }
+        Invoke-WebRequest -Uri ("https://get.videolan.org/vlc/last/win64/" + $zip.href) -OutFile vlc.zip
+        Expand-Archive vlc.zip -DestinationPath vlc_tmp -Force
+        $root = Get-ChildItem vlc_tmp -Directory | Select-Object -First 1
+        Copy-Item -Recurse $root.FullName vlc_bundle
     - name: Build .exe
+      shell: pwsh
       run: |
-        pyinstaller --windowed --onefile --noconfirm --name "VKMusicDownloader" --icon AppIcon.ico --collect-all vkpymusic --add-data "vlc_bundle;vlc_bundle" --add-data "ffmpeg;ffmpeg" vk_music_mac.py
+        pyinstaller --windowed --onedir --noconfirm --name "VKMusicDownloader" --icon AppIcon.ico --collect-all vkpymusic --add-data "vlc_bundle;vlc_bundle" --add-data "ffmpeg;ffmpeg" vk_music_win.py
+        Compress-Archive -Path dist\VKMusicDownloader -DestinationPath VKMusicDownloader-Windows.zip -Force
     - name: Upload Release Asset
       uses: softprops/action-gh-release@v2
       with:
-        files: dist/VKMusicDownloader.exe
+        files: VKMusicDownloader-Windows.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
